@@ -1,8 +1,8 @@
-import yaml
 import logging
-
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+import yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,6 +21,9 @@ class Settings:
         Discord token for the bot to connect
     gateway_url: str | None
         The URL of the Discord gateway that this instance of the bot should connect to and use.
+    shard_count: int | None
+        The number of shards to use for this bot instance.
+        Must be equal to the one set in the gateway proxy if used.
     prefix: str
         Prefix for text commands, mostly unused. Defaults to "b."
     collectible_name: str
@@ -49,11 +52,14 @@ class Settings:
 
     bot_token: str = ""
     gateway_url: str | None = None
+    shard_count: int | None = None
     prefix: str = "b."
 
     collectible_name: str = "countryball"
     bot_name: str = "BallsDex"
     players_group_cog_name: str = "balls"
+
+    max_favorites: int = 50
 
     # /about
     about_description: str = ""
@@ -66,6 +72,8 @@ class Settings:
     admin_guild_ids: list[int] = field(default_factory=list)
     root_role_ids: list[int] = field(default_factory=list)
     admin_role_ids: list[int] = field(default_factory=list)
+
+    log_channel: int | None = None
 
     team_owners: bool = False
     co_owners: list[int] = field(default_factory=list)
@@ -84,6 +92,7 @@ def read_settings(path: "Path"):
 
     settings.bot_token = content["discord-token"]
     settings.gateway_url = content.get("gateway-url")
+    settings.shard_count = content.get("shard-count")
     settings.prefix = content["text-prefix"]
     settings.team_owners = content.get("owners", {}).get("team-members-are-owners", False)
     settings.co_owners = content.get("owners", {}).get("co-owners", [])
@@ -102,15 +111,20 @@ def read_settings(path: "Path"):
     settings.root_role_ids = content["admin-command"]["root-role-ids"] or []
     settings.admin_role_ids = content["admin-command"]["admin-role-ids"] or []
 
+    settings.log_channel = content.get("log-channel", None)
+
     settings.prometheus_enabled = content["prometheus"]["enabled"]
     settings.prometheus_host = content["prometheus"]["host"]
     settings.prometheus_port = content["prometheus"]["port"]
+
+    settings.max_favorites = content.get("max-favorites", 50)
     log.info("Settings loaded.")
 
 
 def write_default_settings(path: "Path"):
     path.write_text(
-        """
+        """# yaml-language-server: $schema=json-config-ref.json
+
 # paste the bot token after regenerating it here
 discord-token: 
 
@@ -163,6 +177,9 @@ admin-command:
   # list of role IDs having partial access to /admin
   admin-role-ids:
 
+# log channel for moderation actions
+log-channel:
+
 # manage bot ownership
 owners:
   # if enabled and the application is under a team, all team members will be considered as owners
@@ -184,6 +201,7 @@ def update_settings(path: "Path"):
     content = path.read_text()
 
     add_owners = True
+    add_config_ref = "# yaml-language-server: $schema=json-config-ref.json" not in content
 
     for line in content.splitlines():
         if line.startswith("owners:"):
@@ -199,6 +217,12 @@ owners:
   # a list of IDs that must be considered owners in addition to the application/team owner
   co-owners:
 """
+    if add_config_ref:
+        if "# yaml-language-server: $schema=config-ref.json" in content:
+            # old file name replacement
+            content = content.replace("$schema=config-ref.json", "$schema=json-config-ref.json")
+        else:
+            content = "# yaml-language-server: $schema=json-config-ref.json\n" + content
 
-    if any((add_owners,)):
+    if any((add_owners, add_config_ref)):
         path.write_text(content)

@@ -1,8 +1,8 @@
 import discord
-
-from discord.ui import View, Button, button
+from discord.ui import Button, View, button
 
 from ballsdex.core.models import GuildConfig
+from ballsdex.settings import settings
 
 
 class AcceptTOSView(View):
@@ -18,14 +18,14 @@ class AcceptTOSView(View):
             Button(
                 style=discord.ButtonStyle.link,
                 label="Terms of Service",
-                url="https://gist.github.com",
+                url=settings.terms_of_service,
             )
         )
         self.add_item(
             Button(
                 style=discord.ButtonStyle.link,
                 label="Privacy policy",
-                url="https://gist.github.com",
+                url=settings.privacy_policy,
             )
         )
 
@@ -44,12 +44,15 @@ class AcceptTOSView(View):
         self.stop()
         await interaction.response.send_message(
             f"The new spawn channel was successfully set to {self.channel.mention}.\n"
-            "Balls will start spawning as users talk unless the bot is disabled."
+            f"{settings.collectible_name.title()} will start spawning as"
+            " users talk unless the bot is disabled."
         )
 
         self.accept_button.disabled = True
         try:
-            await self.original_interaction.followup.edit_message("@original", view=self)
+            await self.original_interaction.followup.edit_message(
+                "@original", view=self  # type: ignore
+            )
         except discord.HTTPException:
             pass
 
@@ -58,6 +61,8 @@ class AcceptTOSView(View):
         for item in self.children:
             item.disabled = True  # type: ignore
         try:
-            await self.original_interaction.followup.edit_message("@original", view=self)
+            await self.original_interaction.followup.edit_message(
+                "@original", view=self  # type: ignore
+            )
         except discord.HTTPException:
             pass

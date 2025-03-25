@@ -1,12 +1,12 @@
-import discord
-import random
-import logging
 import asyncio
-
-from typing import cast
-from datetime import datetime
+import logging
+import random
 from collections import deque, namedtuple
 from dataclasses import dataclass, field
+from datetime import datetime
+from typing import cast
+
+import discord
 
 from ballsdex.packages.countryballs.countryball import CountryBall
 
@@ -97,11 +97,12 @@ class SpawnManager:
         if not cooldown:
             cooldown = SpawnCooldown(message.created_at)
             self.cooldowns[guild.id] = cooldown
-            log.debug(f"Created cooldown manager for guild {guild.id}")
 
         delta = (message.created_at - cooldown.time).total_seconds()
         # change how the threshold varies according to the member count, while nuking farm servers
-        if guild.member_count < 5:
+        if not guild.member_count:
+            return
+        elif guild.member_count < 5:
             multiplier = 0.1
         elif guild.member_count < 100:
             multiplier = 0.8
@@ -113,23 +114,19 @@ class SpawnManager:
 
         # manager cannot be increased more than once per 5 seconds
         if not await cooldown.increase(message):
-            log.debug(f"Handled message {message.id}, skipping due to spam control")
             return
 
         # normal increase, need to reach goal
         if cooldown.amount <= chance:
-            log.debug(f"Handled message {message.id}, count: {cooldown.amount}/{chance}")
             return
 
         # at this point, the goal is reached
         if delta < 600:
             # wait for at least 10 minutes before spawning
-            log.debug(f"Handled message {message.id}, waiting for manager to be 10 mins old")
             return
 
         # spawn countryball
         cooldown.reset(message.created_at)
-        log.debug(f"Handled message {message.id}, spawning ball")
         await self.spawn_countryball(guild)
 
     async def spawn_countryball(self, guild: discord.Guild):

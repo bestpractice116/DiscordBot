@@ -1,9 +1,9 @@
 import os
-from pathlib import Path
 import textwrap
-from PIL import Image, ImageFont, ImageDraw, ImageOps
+from pathlib import Path
 from typing import TYPE_CHECKING
-from ballsdex.core.models import Economy, Regime
+
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 if TYPE_CHECKING:
     from ballsdex.core.models import BallInstance
@@ -35,26 +35,13 @@ def draw_card(ball_instance: "BallInstance"):
         ball_health = (255, 255, 255, 255)
     elif special_image := ball_instance.special_card:
         image = Image.open("." + special_image)
-    elif ball.regime == Regime.DEMOCRACY:
-        image = Image.open(str(SOURCES_PATH / "democracy.png"))
-    elif ball.regime == Regime.DICTATORSHIP:
-        image = Image.open(str(SOURCES_PATH / "dictatorship.png"))
-        ball_health = (131, 98, 240, 255)
-    elif ball.regime == Regime.UNION:
-        image = Image.open(str(SOURCES_PATH / "union.png"))
     else:
-        raise RuntimeError(f"Regime unknown: {ball.regime}")
-
-    if ball.economy == Economy.CAPITALIST:
-        icon = Image.open(str(SOURCES_PATH / "capitalist.png"))
-    elif ball.economy == Economy.COMMUNIST or ball.economy == Economy.ANARCHY:
-        icon = Image.open(str(SOURCES_PATH / "communist.png"))
-    else:
-        raise RuntimeError(f"Economy unknown: {ball.economy}")
+        image = Image.open("." + ball.cached_regime.background)
+    icon = Image.open("." + ball.cached_economy.icon) if ball.cached_economy else None
 
     draw = ImageDraw.Draw(image)
     draw.text((50, 20), ball.short_name or ball.country, font=title_font)
-    for i, line in enumerate(textwrap.wrap(f"Ability: {ball.capacity_name}", width=28)):
+    for i, line in enumerate(textwrap.wrap(f"Ability: {ball.capacity_name}", width=26)):
         draw.text(
             (100, 1050 + 100 * i),
             line,
@@ -63,9 +50,9 @@ def draw_card(ball_instance: "BallInstance"):
             stroke_width=2,
             stroke_fill=(0, 0, 0, 255),
         )
-    for i, line in enumerate(textwrap.wrap(ball.capacity_description, width=33)):
+    for i, line in enumerate(textwrap.wrap(ball.capacity_description, width=32)):
         draw.text(
-            (60, 1300 + 60 * i),
+            (60, 1300 + 80 * i),
             line,
             font=capacity_description_font,
             stroke_width=1,
@@ -80,12 +67,13 @@ def draw_card(ball_instance: "BallInstance"):
         stroke_fill=(0, 0, 0, 255),
     )
     draw.text(
-        (960, 1670),
+        (1120, 1670),
         str(ball_instance.attack),
         font=stats_font,
         fill=(252, 194, 76, 255),
         stroke_width=1,
         stroke_fill=(0, 0, 0, 255),
+        anchor="ra",
     )
     draw.text(
         (30, 1870),
@@ -99,12 +87,12 @@ def draw_card(ball_instance: "BallInstance"):
     )
 
     artwork = Image.open("." + ball.collection_card)
-    image.paste(ImageOps.fit(artwork, artwork_size), CORNERS[0])
+    image.paste(ImageOps.fit(artwork, artwork_size), CORNERS[0])  # type: ignore
 
-    icon = ImageOps.fit(icon, (192, 192))
-    image.paste(icon, (1200, 30), mask=icon)
-
-    icon.close()
+    if icon:
+        icon = ImageOps.fit(icon, (192, 192))
+        image.paste(icon, (1200, 30), mask=icon)
+        icon.close()
     artwork.close()
 
     return image

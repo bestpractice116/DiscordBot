@@ -1,26 +1,25 @@
+import argparse
+import asyncio
+import functools
+import logging
+import logging.handlers
 import os
 import sys
 import time
-import functools
-import asyncio
-import logging
-import logging.handlers
-
-import yarl
-import discord
-import argparse
-
 from pathlib import Path
+from signal import SIGTERM
+
+import discord
+import yarl
+from aerich import Command
+from discord.ext.commands import when_mentioned_or
 from rich import print
 from tortoise import Tortoise
-from aerich import Command
-from signal import SIGTERM
-from discord.utils import setup_logging
-from discord.ext.commands import when_mentioned_or
 
 from ballsdex import __version__ as bot_version
-from ballsdex.settings import settings, read_settings, write_default_settings, update_settings
 from ballsdex.core.bot import BallsDexBot
+from ballsdex.logging import init_logger
+from ballsdex.settings import read_settings, settings, update_settings, write_default_settings
 
 discord.voice_client.VoiceClient.warn_nacl = False  # disable PyNACL warning
 log = logging.getLogger("ballsdex")
@@ -95,18 +94,20 @@ def patch_gateway(proxy_url: str):
         The URL of the gateway proxy to use.
     """
 
-    class ProductionHTTPClient(discord.http.HTTPClient):
+    class ProductionHTTPClient(discord.http.HTTPClient):  # type: ignore
         async def get_gateway(self, **_):
             return f"{proxy_url}?encoding=json&v=10"
 
         async def get_bot_gateway(self, **_):
             try:
-                data = await self.request(discord.http.Route("GET", "/gateway/bot"))
+                data = await self.request(
+                    discord.http.Route("GET", "/gateway/bot")  # type: ignore
+                )
             except discord.HTTPException as exc:
                 raise discord.GatewayNotFound() from exc
             return data["shards"], f"{proxy_url}?encoding=json&v=10"
 
-    class ProductionDiscordWebSocket(discord.gateway.DiscordWebSocket):
+    class ProductionDiscordWebSocket(discord.gateway.DiscordWebSocket):  # type: ignore
         def is_ratelimited(self):
             return False
 
@@ -126,17 +127,23 @@ def patch_gateway(proxy_url: str):
     def is_ws_ratelimited(self):
         return False
 
-    async def before_identify_hook(self, shard_id: int, *, initial: bool = False):
+    async def before_identify_hook(self, shard_id: int | None, *, initial: bool = False):
         pass
 
-    discord.http.HTTPClient.get_gateway = ProductionHTTPClient.get_gateway
-    discord.http.HTTPClient.get_bot_gateway = ProductionHTTPClient.get_bot_gateway
-    discord.gateway.DiscordWebSocket._keep_alive = None
-    discord.gateway.DiscordWebSocket.is_ratelimited = ProductionDiscordWebSocket.is_ratelimited
-    discord.gateway.DiscordWebSocket.debug_send = ProductionDiscordWebSocket.debug_send
-    discord.gateway.DiscordWebSocket.send = ProductionDiscordWebSocket.send
-    discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY = yarl.URL(proxy_url)
-    discord.gateway.ReconnectWebSocket.__init__ = ProductionReconnectWebSocket.__init__
+    discord.http.HTTPClient.get_gateway = ProductionHTTPClient.get_gateway  # type: ignore
+    discord.http.HTTPClient.get_bot_gateway = ProductionHTTPClient.get_bot_gateway  # type: ignore
+    discord.gateway.DiscordWebSocket._keep_alive = None  # type: ignore
+    discord.gateway.DiscordWebSocket.is_ratelimited = (  # type: ignore
+        ProductionDiscordWebSocket.is_ratelimited
+    )
+    discord.gateway.DiscordWebSocket.debug_send = (  # type: ignore
+        ProductionDiscordWebSocket.debug_send
+    )
+    discord.gateway.DiscordWebSocket.send = ProductionDiscordWebSocket.send  # type: ignore
+    discord.gateway.DiscordWebSocket.DEFAULT_GATEWAY = yarl.URL(proxy_url)  # type: ignore
+    discord.gateway.ReconnectWebSocket.__init__ = (  # type: ignore
+        ProductionReconnectWebSocket.__init__
+    )
     BallsDexBot.is_ws_ratelimited = is_ws_ratelimited
     BallsDexBot.before_identify_hook = before_identify_hook
 
@@ -144,7 +151,6 @@ def patch_gateway(proxy_url: str):
 async def shutdown_handler(bot: BallsDexBot, signal_type: str | None = None):
     if signal_type:
         log.info(f"Received {signal_type}, stopping the bot...")
-        sys.exit(signal_type)
     else:
         log.info("Shutting down the bot...")
     try:
@@ -159,6 +165,7 @@ async def shutdown_handler(bot: BallsDexBot, signal_type: str | None = None):
                 f"Timed out cancelling tasks. {len([t for t in pending if not t.cancelled])}/"
                 f"{len(pending)} tasks are still pending!"
             )
+        sys.exit(0 if signal_type else 1)
 
 
 def global_exception_handler(bot: BallsDexBot, loop: asyncio.AbstractEventLoop, context: dict):
@@ -196,28 +203,17 @@ def bot_exception_handler(bot: BallsDexBot, bot_task: asyncio.Future):
         asyncio.create_task(shutdown_handler(bot))
 
 
-def init_logger(disable_rich: bool = False, debug: bool = False):
-    formatter = logging.Formatter(
-        "[{asctime}] {levelname} {name}: {message}", datefmt="%Y-%m-%d %H:%M:%S", style="{"
-    )
+class RemoveWSBehindMsg(logging.Filter):
+    """Filter used when gateway proxy is set, the "behind" message is meaningless in this case."""
 
-    if disable_rich:
-        setup_logging(formatter=formatter, level=logging.INFO)
-    else:
-        setup_logging(level=logging.INFO)
+    def __init__(self):
+        super().__init__(name="discord.gateway")
 
-    if debug:
-        log.setLevel(logging.DEBUG)
+    def filter(self, record):
+        if record.levelname == "WARNING" and "Can't keep up" in record.msg:
+            return False
 
-    # file handler
-    file_handler = logging.handlers.RotatingFileHandler(
-        "ballsdex.log", maxBytes=8**7, backupCount=8
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(file_handler)
-
-    logging.getLogger("aiohttp").setLevel(logging.WARNING)  # don't log each prometheus call
+        return True
 
 
 async def init_tortoise(db_url: str):
@@ -252,12 +248,13 @@ def main():
         update_settings(cli_flags.config_file)
 
     print_welcome()
+    queue_listener: logging.handlers.QueueListener | None = None
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     try:
-        init_logger(cli_flags.disable_rich, cli_flags.debug)
+        queue_listener = init_logger(cli_flags.disable_rich, cli_flags.debug)
 
         token = settings.bot_token
         if not token:
@@ -276,6 +273,7 @@ def main():
         if settings.gateway_url is not None:
             log.info("Using custom gateway URL: %s", settings.gateway_url)
             patch_gateway(settings.gateway_url)
+            logging.getLogger("discord.gateway").addFilter(RemoveWSBehindMsg())
 
         prefix = settings.prefix
 
@@ -284,10 +282,12 @@ def main():
         except Exception:
             log.exception("Failed to connect to database.")
             return  # will exit with code 1
-        log.debug("Tortoise ORM and database ready.")
+        log.info("Tortoise ORM and database ready.")
 
         bot = BallsDexBot(
-            command_prefix=when_mentioned_or(prefix), dev=cli_flags.dev  # type: ignore
+            command_prefix=when_mentioned_or(prefix),
+            dev=cli_flags.dev,  # type: ignore
+            shard_count=settings.shard_count,
         )
 
         exc_handler = functools.partial(global_exception_handler, bot)
@@ -305,14 +305,13 @@ def main():
     except KeyboardInterrupt:
         if bot is not None:
             loop.run_until_complete(shutdown_handler(bot, "Ctrl+C"))
-    except SystemExit:
-        if bot is not None:
-            loop.run_until_complete(shutdown_handler(bot))
     except Exception:
         log.critical("Unhandled exception.", exc_info=True)
         if bot is not None:
             loop.run_until_complete(shutdown_handler(bot))
     finally:
+        if queue_listener:
+            queue_listener.stop()
         loop.run_until_complete(loop.shutdown_asyncgens())
         if server is not None:
             loop.run_until_complete(server.stop())

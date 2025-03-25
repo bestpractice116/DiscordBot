@@ -1,23 +1,25 @@
 import os
-import json
+from typing import List
+
 from fastapi_admin.app import app
 from fastapi_admin.enums import Method
 from fastapi_admin.file_upload import FileUpload
-from fastapi_admin.resources import Field, Link, Model, Action
+from fastapi_admin.resources import Action, Field, Link, Model
 from fastapi_admin.widgets import displays, filters, inputs
 from starlette.requests import Request
+
 from ballsdex.core.models import (
-    Regime,
-    Economy,
-    Special,
-    BallInstance,
-    User,
     Ball,
-    Player,
-    GuildConfig,
+    BallInstance,
+    BlacklistedGuild,
     BlacklistedID,
+    Economy,
+    GuildConfig,
+    Player,
+    Regime,
+    Special,
+    User,
 )
-from typing import List
 
 
 @app.register
@@ -28,8 +30,6 @@ class Home(Link):
 
 
 upload = FileUpload(uploads_dir=os.path.join(".", "static", "uploads"))
-with open("ballsdex/core/admin/capacity-ref.json") as f:
-    ref = json.loads(f.read())
 
 
 @app.register
@@ -100,24 +100,13 @@ class SpecialResource(Model):
         ),
         "rarity",
         Field(
-            name="democracy_card",
-            label="Democracy card",
-            display=displays.Image(width="40"),
-            input_=inputs.Image(upload=upload, null=True),
-        ),
-        Field(
-            name="dictatorship_card",
-            label="Dictatorship card",
-            display=displays.Image(width="40"),
-            input_=inputs.Image(upload=upload, null=True),
-        ),
-        Field(
-            name="union_card",
-            label="Union card",
+            name="background",
+            label="Special background",
             display=displays.Image(width="40"),
             input_=inputs.Image(upload=upload, null=True),
         ),
         "emoji",
+        "tradeable",
     ]
 
     async def get_actions(self, request: Request) -> List[Action]:
@@ -135,6 +124,42 @@ class SpecialResource(Model):
 
 
 @app.register
+class RegimeResource(Model):
+    label = "Regime"
+    model = Regime
+    icon = "fas fa-flag"
+    page_pre_title = "regime list"
+    page_title = "Regimes"
+    fields = [
+        "name",
+        Field(
+            name="background",
+            label="Background (1428x2000)",
+            display=displays.Image(width="40"),
+            input_=inputs.Image(upload=upload, null=True),
+        ),
+    ]
+
+
+@app.register
+class EconomyResource(Model):
+    label = "Economy"
+    model = Economy
+    icon = "fas fa-coins"
+    page_pre_title = "economy list"
+    page_title = "Economies"
+    fields = [
+        "name",
+        Field(
+            name="icon",
+            label="Icon (512x512)",
+            display=displays.Image(width="40"),
+            input_=inputs.Image(upload=upload, null=True),
+        ),
+    ]
+
+
+@app.register
 class BallResource(Model):
     label = "Ball"
     model = Ball
@@ -149,8 +174,8 @@ class BallResource(Model):
             search_mode="icontains",
             placeholder="Search for balls",
         ),
-        filters.Enum(enum=Regime, name="regime", label="Regime"),
-        filters.Enum(enum=Economy, name="economy", label="Economy"),
+        filters.ForeignKey(model=Regime, name="regime", label="Regime"),
+        filters.ForeignKey(model=Economy, name="economy", label="Economy"),
         filters.Boolean(name="enabled", label="Enabled"),
         filters.Boolean(name="tradeable", label="Tradeable"),
     ]
@@ -158,6 +183,7 @@ class BallResource(Model):
         "country",
         "short_name",
         "catch_names",
+        "created_at",
         "regime",
         "economy",
         "health",
@@ -193,19 +219,6 @@ class BallResource(Model):
             name="capacity_description",
             label="Capacity description",
         ),
-        # Field(
-        #     name="capacity_logic",
-        #     label="Capacity logic",
-        #     input_=inputs.Json(
-        #         null=True,
-        #         options={
-        #             "schema": ref,
-        #             "allowSchemaSuggestions": "true",
-        #             "mode": "tree",
-        #             "modes": ["tree", "view", "form", "code", "text", "preview"],
-        #         },
-        #     ),
-        # ),
     ]
 
     async def get_actions(self, request: Request) -> List[Action]:
@@ -236,21 +249,34 @@ class BallInstanceResource(Model):
             placeholder="Search for ball IDs",
         ),
         filters.ForeignKey(model=Ball, name="ball", label="Ball"),
+        filters.ForeignKey(model=Special, name="special", label="Special"),
+        filters.Date(name="catch_date", label="Catch date"),
+        filters.Boolean(name="shiny", label="Shiny"),
+        filters.Boolean(name="favorite", label="Favorite"),
         filters.Search(
             name="player__discord_id",
             label="User ID",
             placeholder="Search for Discord user ID",
         ),
+        filters.Search(
+            name="server_id",
+            label="Server ID",
+            placeholder="Search for Discord server ID",
+        ),
+        filters.Boolean(name="tradeable", label="Tradeable"),
     ]
     fields = [
         "id",
         "ball",
         "player",
         "catch_date",
+        "server_id",
         "shiny",
         "special",
+        "favorite",
         "health_bonus",
         "attack_bonus",
+        "tradeable",
     ]
 
 
@@ -296,7 +322,7 @@ class GuildConfigResource(Model):
 class BlacklistedIDResource(Model):
     label = "Blacklisted user ID"
     model = BlacklistedID
-    icon = "fas fa-lock"
+    icon = "fas fa-user-lock"
     page_title = "Blacklisted user IDs"
     filters = [
         filters.Search(
@@ -304,6 +330,32 @@ class BlacklistedIDResource(Model):
             label="ID",
             search_mode="icontains",
             placeholder="Filter by ID",
+        ),
+        filters.Search(
+            name="reason",
+            label="Reason",
+            search_mode="search",
+            placeholder="Search by reason",
+        ),
+    ]
+    fields = [
+        "discord_id",
+        "reason",
+    ]
+
+
+@app.register
+class BlacklistedGuildIDResource(Model):
+    label = "Blacklisted Guild ID"
+    model = BlacklistedGuild
+    icon = "fas fa-lock"
+    page_title = "Blacklisted Guild IDs"
+    filters = [
+        filters.Search(
+            name="guild_id",
+            label="ID",
+            search_mode="icontains",
+            placeholder="Filter by Guild ID",
         ),
         filters.Search(
             name="reason",

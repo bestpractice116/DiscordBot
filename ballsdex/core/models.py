@@ -1,33 +1,37 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from enum import IntEnum
+from io import BytesIO
+from typing import TYPE_CHECKING, Iterable, Tuple, Type
+
 import discord
 from discord.utils import format_dt
-
-from io import BytesIO
-from enum import IntEnum
-from datetime import datetime
-from typing import TYPE_CHECKING, Tuple, Type, Iterable
-from concurrent.futures import ThreadPoolExecutor
-
-from tortoise import models, fields, validators, exceptions, signals
 from fastapi_admin.models import AbstractAdmin
+from tortoise import exceptions, fields, models, signals, timezone, validators
+
+from ballsdex.core.image_generator.image_gen import draw_card
 
 if TYPE_CHECKING:
     from tortoise.backends.base.client import BaseDBAsyncClient
 
 
-balls: list[Ball] = []
-specials: list[Special] = []
+balls: dict[int, Ball] = {}
+regimes: dict[int, Regime] = {}
+economies: dict[int, Economy] = {}
+specials: dict[int, Special] = {}
 
 
 async def lower_catch_names(
     model: Type[Ball],
     instance: Ball,
     created: bool,
-    using_db: "BaseDBAsyncClient" | None = None,
+    using_db: "BaseDBAsyncClient | None" = None,
     update_fields: Iterable[str] | None = None,
 ):
-    instance.catch_names = instance.catch_names.lower()
+    if instance.catch_names:
+        instance.catch_names = instance.catch_names.lower()
 
 
 class DiscordSnowflakeValidator(validators.Validator):
@@ -58,16 +62,20 @@ class GuildConfig(models.Model):
     )
 
 
-class Regime(IntEnum):
-    DEMOCRACY = 1
-    DICTATORSHIP = 2
-    UNION = 3
+class Regime(models.Model):
+    name = fields.CharField(max_length=64)
+    background = fields.CharField(max_length=200, description="1428x2000 PNG image")
+
+    def __str__(self):
+        return self.name
 
 
-class Economy(IntEnum):
-    CAPITALIST = 1
-    COMMUNIST = 2
-    ANARCHY = 3
+class Economy(models.Model):
+    name = fields.CharField(max_length=64)
+    icon = fields.CharField(max_length=200, description="512x512 PNG image")
+
+    def __str__(self):
+        return self.name
 
 
 class Special(models.Model):
@@ -83,30 +91,23 @@ class Special(models.Model):
     rarity = fields.FloatField(
         description="Value between 0 and 1, chances of using this special background."
     )
-    democracy_card = fields.CharField(max_length=200)
-    dictatorship_card = fields.CharField(max_length=200)
-    union_card = fields.CharField(max_length=200)
+    background = fields.CharField(max_length=200, description="1428x2000 PNG image", null=True)
     emoji = fields.CharField(
         max_length=20,
         description="Either a unicode character or a discord emoji ID",
         null=True,
     )
+    tradeable = fields.BooleanField(default=True)
+    hidden = fields.BooleanField(default=False, description="Hides the event from user commands")
 
     def __str__(self) -> str:
         return self.name
 
-    def get_background(self, regime: Regime) -> str | None:
-        if regime == Regime.DEMOCRACY:
-            return self.democracy_card
-        elif regime == Regime.DICTATORSHIP:
-            return self.dictatorship_card
-        elif regime == Regime.UNION:
-            return self.union_card
-        else:
-            return None
-
 
 class Ball(models.Model):
+    regime_id: int
+    economy_id: int
+
     country = fields.CharField(max_length=48, unique=True)
     short_name = fields.CharField(max_length=12, null=True, default=None)
     catch_names = fields.TextField(
@@ -114,8 +115,15 @@ class Ball(models.Model):
         default=None,
         description="Additional possible names for catching this ball, separated by semicolons",
     )
-    regime = fields.IntEnumField(Regime, description="Political regime of this country")
-    economy = fields.IntEnumField(Economy, description="Economical regime of this country")
+    regime: fields.ForeignKeyRelation[Regime] = fields.ForeignKeyField(
+        "models.Regime", description="Political regime of this country", on_delete=fields.CASCADE
+    )
+    economy: fields.ForeignKeyRelation[Economy] | None = fields.ForeignKeyField(
+        "models.Economy",
+        description="Economical regime of this country",
+        on_delete=fields.SET_NULL,
+        null=True,
+    )
     health = fields.IntField(description="Ball health stat")
     attack = fields.IntField(description="Ball attack stat")
     rarity = fields.FloatField(description="Rarity of this ball")
@@ -138,35 +146,67 @@ class Ball(models.Model):
         max_length=256, description="Description of the countryball's capacity"
     )
     capacity_logic = fields.JSONField(description="Effect of this capacity", default={})
+    created_at = fields.DatetimeField(auto_now_add=True, null=True)
 
     instances: fields.BackwardFKRelation[BallInstance]
 
     def __str__(self) -> str:
         return self.country
 
+    @property
+    def cached_regime(self) -> Regime:
+        return regimes.get(self.regime_id, self.regime)
+
+    @property
+    def cached_economy(self) -> Economy | None:
+        return economies.get(self.economy_id, self.economy)
+
 
 Ball.register_listener(signals.Signals.pre_save, lower_catch_names)
 
 
 class BallInstance(models.Model):
+    ball_id: int
+    special_id: int
+    trade_player_id: int
+
     ball: fields.ForeignKeyRelation[Ball] = fields.ForeignKeyField("models.Ball")
     player: fields.ForeignKeyRelation[Player] = fields.ForeignKeyRelation(
         "models.Player", related_name="balls"
     )  # type: ignore
     catch_date = fields.DatetimeField(auto_now_add=True)
+    spawned_time = fields.DatetimeField(null=True)
+    server_id = fields.BigIntField(
+        description="Discord server ID where this ball was caught", null=True
+    )
     shiny = fields.BooleanField(default=False)
-    special: fields.ForeignKeyRelation[Special] = fields.ForeignKeyField(
+    special: fields.ForeignKeyRelation[Special] | None = fields.ForeignKeyField(
         "models.Special", null=True, default=None, on_delete=fields.SET_NULL
     )
     health_bonus = fields.IntField(default=0)
     attack_bonus = fields.IntField(default=0)
-    trade_player: fields.ForeignKeyRelation[Player] = fields.ForeignKeyField(
+    trade_player: fields.ForeignKeyRelation[Player] | None = fields.ForeignKeyField(
         "models.Player", null=True, default=None, on_delete=fields.SET_NULL
     )
     favorite = fields.BooleanField(default=False)
+    tradeable = fields.BooleanField(default=True)
+    locked: fields.Field[datetime] = fields.DatetimeField(
+        description="If the instance was locked for a trade and when",
+        null=True,
+        default=None,
+    )
+    extra_data = fields.JSONField(default={})
 
     class Meta:
         unique_together = ("player", "id")
+
+    @property
+    def is_tradeable(self) -> bool:
+        return (
+            self.tradeable
+            and self.countryball.tradeable
+            and getattr(self.specialcard, "tradeable", True)
+        )
 
     @property
     def attack(self) -> int:
@@ -181,34 +221,23 @@ class BallInstance(models.Model):
     @property
     def special_card(self) -> str | None:
         if self.specialcard:
-            return (
-                self.specialcard.get_background(self.countryball.regime)
-                or self.countryball.collection_card
-            )
+            return self.specialcard.background or self.countryball.collection_card
 
     @property
     def countryball(self) -> Ball:
-        if balls:
-            try:
-                return next(filter(lambda ball: ball.pk == self.ball_id, balls))
-            except StopIteration:
-                pass
-        return self.ball
+        return balls.get(self.ball_id, self.ball)
 
     @property
-    def specialcard(self) -> Special:
-        if specials:
-            try:
-                return next(filter(lambda x: x.pk == self.special_id, specials))
-            except StopIteration:
-                pass
-        return self.special
+    def specialcard(self) -> Special | None:
+        return specials.get(self.special_id, self.special)
 
     def __str__(self) -> str:
         return self.to_string()
 
-    def to_string(self, bot: discord.Client | None = None) -> str:
+    def to_string(self, bot: discord.Client | None = None, is_trade: bool = False) -> str:
         emotes = ""
+        if bot and self.pk in bot.locked_balls and not is_trade:  # type: ignore
+            emotes += "🔒"
         if self.favorite:
             emotes += "❤️"
         if self.shiny:
@@ -226,12 +255,12 @@ class BallInstance(models.Model):
 
     def special_emoji(self, bot: discord.Client | None, use_custom_emoji: bool = True) -> str:
         if self.specialcard:
+            if not use_custom_emoji:
+                return "⚡ "
             special_emoji = ""
             try:
                 emoji_id = int(self.specialcard.emoji)
                 special_emoji = bot.get_emoji(emoji_id) if bot else "⚡ "
-                if not use_custom_emoji:
-                    return "⚡ "
             except ValueError:
                 special_emoji = self.specialcard.emoji
             except TypeError:
@@ -246,8 +275,9 @@ class BallInstance(models.Model):
         short: bool = False,
         include_emoji: bool = False,
         bot: discord.Client | None = None,
+        is_trade: bool = False,
     ) -> str:
-        text = self.to_string(bot)
+        text = self.to_string(bot, is_trade=is_trade)
         if not short:
             text += f" ATK:{self.attack_bonus:+d}% HP:{self.health_bonus:+d}%"
         if include_emoji:
@@ -262,8 +292,6 @@ class BallInstance(models.Model):
         return text
 
     def draw_card(self) -> BytesIO:
-        from ballsdex.core.image_generator.image_gen import draw_card
-
         image = draw_card(self)
         buffer = BytesIO()
         image.save(buffer, format="png")
@@ -315,11 +343,30 @@ class BallInstance(models.Model):
 
         return content, discord.File(buffer, "card.png")
 
+    async def lock_for_trade(self):
+        self.locked = timezone.now()
+        await self.save(update_fields=("locked",))
+
+    async def unlock(self):
+        self.locked = None  # type: ignore
+        await self.save(update_fields=("locked",))
+
+    async def is_locked(self):
+        await self.refresh_from_db(fields=("locked",))
+        self.locked
+        return self.locked is not None and (self.locked + timedelta(minutes=30)) > timezone.now()
+
 
 class DonationPolicy(IntEnum):
     ALWAYS_ACCEPT = 1
     REQUEST_APPROVAL = 2
     ALWAYS_DENY = 3
+
+
+class PrivacyPolicy(IntEnum):
+    ALLOW = 1
+    DENY = 2
+    SAME_SERVER = 3
 
 
 class Player(models.Model):
@@ -330,6 +377,11 @@ class Player(models.Model):
         DonationPolicy,
         description="How you want to handle donations",
         default=DonationPolicy.ALWAYS_ACCEPT,
+    )
+    privacy_policy = fields.IntEnumField(
+        PrivacyPolicy,
+        description="How you want to handle privacy",
+        default=PrivacyPolicy.DENY,
     )
     balls: fields.BackwardFKRelation[BallInstance]
 
@@ -346,3 +398,46 @@ class BlacklistedID(models.Model):
 
     def __str__(self) -> str:
         return str(self.discord_id)
+
+
+class BlacklistedGuild(models.Model):
+    discord_id = fields.BigIntField(
+        description="Discord Guild ID", unique=True, validators=[DiscordSnowflakeValidator()]
+    )
+    reason = fields.TextField(null=True, default=None)
+    date = fields.DatetimeField(null=True, default=None, auto_now_add=True)
+
+    def __str__(self) -> str:
+        return str(self.discord_id)
+
+
+class Trade(models.Model):
+    id: int
+    player1: fields.ForeignKeyRelation[Player] = fields.ForeignKeyField(
+        "models.Player", related_name="trades"
+    )
+    player2: fields.ForeignKeyRelation[Player] = fields.ForeignKeyField(
+        "models.Player", related_name="trades2"
+    )
+    date = fields.DatetimeField(auto_now_add=True)
+    tradeobjects: fields.ReverseRelation[TradeObject]
+
+    def __str__(self) -> str:
+        return str(self.pk)
+
+
+class TradeObject(models.Model):
+    trade_id: int
+
+    trade: fields.ForeignKeyRelation[Trade] = fields.ForeignKeyField(
+        "models.Trade", related_name="tradeobjects"
+    )
+    ballinstance: fields.ForeignKeyRelation[BallInstance] = fields.ForeignKeyField(
+        "models.BallInstance", related_name="tradeobjects"
+    )
+    player: fields.ForeignKeyRelation[Player] = fields.ForeignKeyField(
+        "models.Player", related_name="tradeobjects"
+    )
+
+    def __str__(self) -> str:
+        return str(self.pk)

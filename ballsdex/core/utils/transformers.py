@@ -1,231 +1,309 @@
-import discord
-import time
 import logging
+import time
+from datetime import timedelta
+from enum import Enum
+from typing import TYPE_CHECKING, Generic, Iterable, TypeVar
 
+import discord
 from discord import app_commands
-from discord.ext import tasks
-from datetime import datetime
-from dataclasses import dataclass
+from discord.interactions import Interaction
 from tortoise.exceptions import DoesNotExist
-from typing import TypeVar, Generic, AsyncIterator
+from tortoise.expressions import Q, RawSQL
+from tortoise.models import Model
+from tortoise.timezone import now as tortoise_now
 
+from ballsdex.core.models import (
+    Ball,
+    BallInstance,
+    Economy,
+    Regime,
+    Special,
+    balls,
+    economies,
+    regimes,
+)
 from ballsdex.settings import settings
-from ballsdex.core.models import Ball, BallInstance, Player, Special, balls
+
+if TYPE_CHECKING:
+    from ballsdex.core.bot import BallsDexBot
 
 log = logging.getLogger("ballsdex.core.utils.transformers")
+T = TypeVar("T", bound=Model)
 
-CACHE_TIME = 30
-T = TypeVar("T")
+__all__ = (
+    "BallTransform",
+    "BallInstanceTransform",
+    "SpecialTransform",
+    "RegimeTransform",
+    "EconomyTransform",
+)
 
 
-@dataclass
-class CachedBallInstance:
+class TradeCommandType(Enum):
     """
-    Used to compute the searchable terms for a countryball only once.
+    If a command is using `BallInstanceTransformer` for trading purposes, it should define this
+    enum to filter out values.
     """
 
-    model: BallInstance
-    searchable: str = ""
-
-    def __post_init__(self):
-        self.searchable = " ".join(
-            (
-                self.model.countryball.country.lower(),
-                "{:0x}".format(self.model.pk),
-                *(
-                    self.model.countryball.catch_names.split(";")
-                    if self.model.countryball.catch_names
-                    else []
-                ),
-            )
-        )
+    PICK = 0
+    REMOVE = 1
 
 
-@dataclass
-class ListCache(Generic[T]):
-    time: float
-    balls: list[T]
+class ValidationError(Exception):
+    """
+    Raised when an autocomplete result is forbidden and should raise a user message.
+    """
+
+    def __init__(self, message: str):
+        self.message = message
 
 
-class BallInstanceCache:
-    def __init__(self):
-        self.cache: dict[int, ListCache[CachedBallInstance]] = {}
-        self.clear_cache.start()
+class ModelTransformer(app_commands.Transformer, Generic[T]):
+    """
+    Base abstract class for autocompletion from on Tortoise models
 
-    async def get(self, user: discord.abc.User, value: str) -> AsyncIterator[BallInstance]:
-        time = datetime.utcnow().timestamp()
-        try:
-            cache = self.cache[user.id]
-            if time - cache.time > 60:
-                raise KeyError  # refresh cache after a minute
-        except KeyError:
-            try:
-                player = await Player.get(discord_id=user.id)
-            except DoesNotExist:
-                balls = []
-            else:
-                balls = (
-                    await BallInstance.filter(player=player).select_related("ball", "player").all()
-                )
-            cache = ListCache(time, [CachedBallInstance(x) for x in balls])
-            self.cache[user.id] = cache
+    Attributes
+    ----------
+    name: str
+        Name to qualify the object being listed
+    model: T
+        The Tortoise model associated to the class derivation
+    """
 
-        total = 0
-        for ball in cache.balls:
-            if value.lower() in ball.searchable:
-                yield ball.model
-                total += 1
-                if total >= 25:
-                    return
+    name: str
+    model: T
 
-    @tasks.loop(seconds=10, reconnect=True)
-    async def clear_cache(self):
-        time = datetime.utcnow().timestamp()
-        to_delete: list[int] = []
-        for id, user in self.cache.items():
-            if time - user.time > CACHE_TIME:
-                to_delete.append(id)
-        for id in to_delete:
-            del self.cache[id]
+    def key(self, model: T) -> str:
+        """
+        Return a string used for searching while sending autocompletion suggestions.
+        """
+        raise NotImplementedError()
 
+    async def validate(self, interaction: discord.Interaction["BallsDexBot"], item: T):
+        """
+        A function to validate the fetched item before calling back the command.
 
-class BallInstanceTransformer(app_commands.Transformer):
-    def __init__(self):
-        self.cache = BallInstanceCache()
+        Raises
+        ------
+        ValidationError
+            Raised if the item does not pass validation with the message to be displayed
+        """
+        pass
 
-    async def validate(
-        self, interaction: discord.Interaction, ball: BallInstance
-    ) -> BallInstance | None:
-        # checking if the ball does belong to user, and a custom ID wasn't forced
-        if ball.player.discord_id != interaction.user.id:
-            await interaction.response.send_message(
-                f"That {settings.collectible_name} doesn't belong to you.", ephemeral=True
-            )
-            return None
-        else:
-            return ball
+    async def get_from_pk(self, value: int) -> T:
+        """
+        Return a Tortoise model instance from a primary key.
+
+        Raises
+        ------
+        KeyError | tortoise.exceptions.DoesNotExist
+            Entry does not exist
+        """
+        return await self.model.get(pk=value)
+
+    async def get_options(
+        self, interaction: discord.Interaction["BallsDexBot"], value: str
+    ) -> list[app_commands.Choice[int]]:
+        """
+        Generate the list of options for autocompletion
+        """
+        raise NotImplementedError()
 
     async def autocomplete(
-        self, interaction: discord.Interaction, value: str
-    ) -> list[app_commands.Choice[int | float | str]]:
+        self, interaction: Interaction["BallsDexBot"], value: str
+    ) -> list[app_commands.Choice[int]]:
         t1 = time.time()
-        choices: list[app_commands.Choice] = []
-        async for ball in self.cache.get(interaction.user, value):
-            choices.append(app_commands.Choice(name=ball.description(), value=str(ball.pk)))
+        choices: list[app_commands.Choice[int]] = []
+        for option in await self.get_options(interaction, value):
+            choices.append(option)
         t2 = time.time()
-        log.debug(f"Autocomplete took {round((t2-t1)*1000)}ms, {len(choices)} results")
+        log.debug(
+            f"{self.name.title()} autocompletion took "
+            f"{round((t2-t1)*1000)}ms, {len(choices)} results"
+        )
         return choices
 
-    async def transform(self, interaction: discord.Interaction, value: str) -> BallInstance | None:
-        # in theory, the selected ball should be in the cache
-        # but it's possible that the autocomplete was never invoked
-        try:
-            try:
-                balls = self.cache.cache[interaction.user.id].balls
-                for ball in balls:
-                    if ball.model.pk == int(value):
-                        return await self.validate(interaction, ball.model)
-            except KeyError:
-                # maybe the cache didn't have time to build, let's try anyway to fetch the value
-                try:
-                    ball = await BallInstance.get(id=int(value)).prefetch_related("player")
-                    return await self.validate(interaction, ball)
-                except DoesNotExist:
-                    await interaction.response.send_message(
-                        "The ball could not be found. Make sure to use the autocomplete "
-                        "function on this command.",
-                        ephemeral=True,
-                    )
-                    return None
-
-        except ValueError:
-            # autocomplete didn't work and user tried to force a custom value
+    async def transform(self, interaction: Interaction["BallsDexBot"], value: str) -> T | None:
+        if not value:
             await interaction.response.send_message(
-                "The ball could not be found. Make sure to use the autocomplete "
+                "You need to use the autocomplete function for the economy selection."
+            )
+            return None
+        try:
+            instance = await self.get_from_pk(int(value))
+            await self.validate(interaction, instance)
+        except (DoesNotExist, KeyError, ValueError):
+            await interaction.response.send_message(
+                f"The {self.name} could not be found. Make sure to use the autocomplete "
                 "function on this command.",
                 ephemeral=True,
             )
             return None
+        except ValidationError as e:
+            await interaction.response.send_message(e.message, ephemeral=True)
+            return None
+        else:
+            return instance
 
 
-BallInstanceTransform = app_commands.Transform[BallInstance, BallInstanceTransformer]
+class BallInstanceTransformer(ModelTransformer[BallInstance]):
+    name = settings.collectible_name
+    model = BallInstance  # type: ignore
+
+    async def get_from_pk(self, value: int) -> BallInstance:
+        return await self.model.get(pk=value).prefetch_related("player")
+
+    async def validate(self, interaction: discord.Interaction["BallsDexBot"], item: BallInstance):
+        # checking if the ball does belong to user, and a custom ID wasn't forced
+        if item.player.discord_id != interaction.user.id:
+            raise ValidationError(f"That {settings.collectible_name} doesn't belong to you.")
+
+    async def get_options(
+        self, interaction: Interaction["BallsDexBot"], value: str
+    ) -> list[app_commands.Choice[int]]:
+        balls_queryset = BallInstance.filter(player__discord_id=interaction.user.id)
+
+        if (special := getattr(interaction.namespace, "special", None)) and special.isdigit():
+            balls_queryset = balls_queryset.filter(special_id=int(special))
+        if (shiny := getattr(interaction.namespace, "shiny", None)) and shiny is not None:
+            balls_queryset = balls_queryset.filter(shiny=shiny)
+
+        if interaction.command and (trade_type := interaction.command.extras.get("trade", None)):
+            if trade_type == TradeCommandType.PICK:
+                balls_queryset = balls_queryset.filter(
+                    Q(
+                        Q(locked__isnull=True)
+                        | Q(locked__lt=tortoise_now() - timedelta(minutes=30))
+                    )
+                )
+            else:
+                balls_queryset = balls_queryset.filter(
+                    locked__isnull=False, locked__gt=tortoise_now() - timedelta(minutes=30)
+                )
+        balls_queryset = (
+            balls_queryset.select_related("ball")
+            .annotate(
+                searchable=RawSQL(
+                    "to_hex(ballinstance.id) || ' ' || ballinstance__ball.country || "
+                    "' ' || ballinstance__ball.catch_names"
+                )
+            )
+            .filter(searchable__icontains=value)
+            .limit(25)
+        )
+
+        choices: list[app_commands.Choice] = [
+            app_commands.Choice(name=x.description(bot=interaction.client), value=str(x.pk))
+            for x in await balls_queryset
+        ]
+        return choices
 
 
-class BallTransformer(app_commands.Transformer):
+class TTLModelTransformer(ModelTransformer[T]):
+    """
+    Base class for simple Tortoise model autocompletion with TTL cache.
+
+    This is used in most cases except for BallInstance which requires special handling depending
+    on the interaction passed.
+
+    Attributes
+    ----------
+    ttl: float
+        Delay in seconds for `items` to live until refreshed with `load_items`, defaults to 300
+    """
+
+    ttl: float = 300
+
     def __init__(self):
-        self.cache: ListCache[Ball] | None = None
+        self.items: dict[int, T] = {}
+        self.search_map: dict[T, str] = {}
+        self.last_refresh: float = 0
+        log.debug(f"Inited transformer for {self.name}")
 
-    async def load_cache(self):
-        self.cache = ListCache(time.time(), balls)
+    async def load_items(self) -> Iterable[T]:
+        """
+        Query values to fill `items` with.
+        """
+        return await self.model.all()
 
-    async def autocomplete(
-        self, interaction: discord.Interaction, value: str
-    ) -> list[app_commands.Choice[int | float | str]]:
-        if self.cache is None or time.time() - self.cache.time > 300:
-            await self.load_cache()
+    async def maybe_refresh(self):
+        t = time.time()
+        if t - self.last_refresh > self.ttl:
+            self.items = {x.pk: x for x in await self.load_items()}
+            self.last_refresh = t
+            self.search_map = {x: self.key(x).lower() for x in self.items.values()}
+
+    async def get_options(
+        self, interaction: Interaction["BallsDexBot"], value: str
+    ) -> list[app_commands.Choice[str]]:
+        await self.maybe_refresh()
+
+        i = 0
         choices: list[app_commands.Choice] = []
-        for ball in self.cache.balls:
-            if value.lower() in ball.country.lower():
-                choices.append(app_commands.Choice(name=ball.country, value=str(ball.pk)))
-                if len(choices) == 25:
+        for item in self.items.values():
+            if value.lower() in self.search_map[item]:
+                choices.append(app_commands.Choice(name=self.key(item), value=str(item.pk)))
+                i += 1
+                if i == 25:
                     break
         return choices
 
-    async def transform(self, interaction: discord.Interaction, value: str) -> Ball | None:
-        if not value:
-            await interaction.response.send_message(
-                "You need to use the autocomplete function for the ball selection."
-            )
-            return None
-        try:
-            return next(filter(lambda ball: ball.pk == int(value), balls))
-        except (StopIteration, ValueError):
-            await interaction.response.send_message(
-                "The ball could not be found. Make sure to use the autocomplete "
-                "function on this command.",
-                ephemeral=True,
-            )
-            return None
+
+class BallTransformer(TTLModelTransformer[Ball]):
+    name = settings.collectible_name
+    model = Ball()
+
+    def key(self, model: Ball) -> str:
+        return model.country
+
+    async def load_items(self) -> Iterable[Ball]:
+        return balls.values()
+
+
+class BallEnabledTransformer(BallTransformer):
+    async def load_items(self) -> Iterable[Ball]:
+        return {k: v for k, v in balls.items() if v.enabled}.values()
+
+
+class SpecialTransformer(TTLModelTransformer[Special]):
+    name = "special event"
+    model = Special()
+
+    def key(self, model: Special) -> str:
+        return model.name
+
+
+class SpecialEnabledTransformer(SpecialTransformer):
+    async def load_items(self) -> Iterable[Special]:
+        return await Special.filter(hidden=False).all()
+
+
+class RegimeTransformer(TTLModelTransformer[Regime]):
+    name = "regime"
+    model = Regime()
+
+    def key(self, model: Regime) -> str:
+        return model.name
+
+    async def load_items(self) -> Iterable[Regime]:
+        return regimes.values()
+
+
+class EconomyTransformer(TTLModelTransformer[Economy]):
+    name = "economy"
+    model = Economy()
+
+    def key(self, model: Economy) -> str:
+        return model.name
+
+    async def load_items(self) -> Iterable[Economy]:
+        return economies.values()
 
 
 BallTransform = app_commands.Transform[Ball, BallTransformer]
-
-
-class SpecialTransformer(app_commands.Transformer):
-    def __init__(self):
-        self.cache: ListCache[Special] | None = None
-
-    async def load_cache(self):
-        events = await Special.all()
-        self.cache = ListCache(time.time(), events)
-
-    async def autocomplete(
-        self, interaction: discord.Interaction, value: str
-    ) -> list[app_commands.Choice[int | float | str]]:
-        if self.cache is None or time.time() - self.cache.time > 300:
-            await self.load_cache()
-        choices: list[app_commands.Choice] = []
-        for event in self.cache.balls:
-            if value.lower() in event.name.lower():
-                choices.append(app_commands.Choice(name=event.name, value=str(event.pk)))
-                if len(choices) == 25:
-                    break
-        return choices
-
-    async def transform(self, interaction: discord.Interaction, value: str) -> Special | None:
-        if not value:
-            await interaction.response.send_message(
-                "You need to use the autocomplete function for the special background selection."
-            )
-            return None
-        try:
-            return await Special.get(pk=int(value))
-        except (ValueError, DoesNotExist):
-            await interaction.response.send_message(
-                "The special event could not be found. Make sure to use the autocomplete "
-                "function on this command."
-            )
-            return None
-
-
+BallInstanceTransform = app_commands.Transform[BallInstance, BallInstanceTransformer]
 SpecialTransform = app_commands.Transform[Special, SpecialTransformer]
+RegimeTransform = app_commands.Transform[Regime, RegimeTransformer]
+EconomyTransform = app_commands.Transform[Economy, EconomyTransformer]
+SpecialEnabledTransform = app_commands.Transform[Special, SpecialEnabledTransformer]
+BallEnabledTransform = app_commands.Transform[Ball, BallEnabledTransformer]

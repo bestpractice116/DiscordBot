@@ -1,17 +1,17 @@
-import discord
-import sys
 import logging
 import random
-
+import sys
 from typing import TYPE_CHECKING
 
+import discord
 from discord import app_commands
 from discord.ext import commands
 
 from ballsdex import __version__ as ballsdex_version
-from ballsdex.settings import settings
-from ballsdex.core.models import Ball, balls as countryballs
+from ballsdex.core.models import Ball
+from ballsdex.core.models import balls as countryballs
 from ballsdex.core.utils.tortoise import row_count_estimate
+from ballsdex.settings import settings
 
 if TYPE_CHECKING:
     from ballsdex.core.bot import BallsDexBot
@@ -39,7 +39,7 @@ class Info(commands.Cog):
 
     async def _get_10_balls_emojis(self) -> list[discord.Emoji]:
         balls: list[Ball] = random.choices(
-            [x for x in countryballs if x.enabled], k=min(10, len(countryballs))
+            [x for x in countryballs.values() if x.enabled], k=min(10, len(countryballs))
         )
         emotes: list[discord.Emoji] = []
 
@@ -64,7 +64,7 @@ class Info(commands.Cog):
             log.error("Failed to fetch 10 balls emotes", exc_info=True)
             balls = []
 
-        balls_count = len([x for x in countryballs if x.enabled])
+        balls_count = len([x for x in countryballs.values() if x.enabled])
         players_count = await row_count_estimate("player")
         balls_instances_count = await row_count_estimate("ballinstance")
 
@@ -97,10 +97,10 @@ class Info(commands.Cog):
             f"{' '.join(str(x) for x in balls)}\n"
             f"{settings.about_description}\n"
             f"*Running version **[{ballsdex_version}]({settings.github_link}/releases)***\n\n"
-            f"**{balls_count}** {settings.collectible_name}s to collect\n"
-            f"**{players_count}** players that caught "
-            f"**{balls_instances_count}** {settings.collectible_name}s\n"
-            f"**{len(self.bot.guilds)}** servers playing\n\n"
+            f"**{balls_count:,}** {settings.collectible_name}s to collect\n"
+            f"**{players_count:,}** players that caught "
+            f"**{balls_instances_count:,}** {settings.collectible_name}s\n"
+            f"**{len(self.bot.guilds):,}** servers playing\n\n"
             "This bot was made by **El Laggron**, consider supporting me on my "
             "[Patreon](https://patreon.com/retke) :heart:\n\n"
             f"[Discord server]({settings.discord_invite}) • [Invite me]({invite_link}) • "

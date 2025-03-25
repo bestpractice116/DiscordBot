@@ -1,13 +1,12 @@
 from fastapi import Depends, Path
-from tortoise.exceptions import DoesNotExist
-from starlette.requests import Request
-from starlette.responses import Response
-
 from fastapi_admin.app import app
 from fastapi_admin.depends import get_resources
 from fastapi_admin.template import templates
+from starlette.requests import Request
+from starlette.responses import Response
+from tortoise.exceptions import DoesNotExist
 
-from ballsdex.core.models import Ball, BallInstance, Player, GuildConfig, Special
+from ballsdex.core.models import Ball, BallInstance, GuildConfig, Player, Special
 
 
 @app.get("/")
@@ -35,7 +34,7 @@ async def generate_card(
     request: Request,
     pk: str = Path(...),
 ):
-    ball = await Ball.get(pk=pk)
+    ball = await Ball.get(pk=pk).prefetch_related("regime", "economy")
     temp_instance = BallInstance(ball=ball, player=await Player.first(), count=1)
     buffer = temp_instance.draw_card()
     return Response(content=buffer.read(), media_type="image/png")
@@ -48,7 +47,7 @@ async def generate_special_card(
 ):
     special = await Special.get(pk=pk)
     try:
-        ball = await Ball.first()
+        ball = await Ball.first().prefetch_related("regime", "economy")
     except DoesNotExist:
         return Response(
             content="At least one ball must exist", status_code=422, media_type="text/html"
