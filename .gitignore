@@ -34,3 +34,5 @@ static
 # settings
 config.yml
 docker-compose.override.yml
+
+.env
