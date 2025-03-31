@@ -28,8 +28,8 @@ class Home(Link):
     icon = "fas fa-home"
     url = "/admin"
 
-
-upload = FileUpload(uploads_dir=os.path.join(".", "static", "uploads"))
+const upload_dir = os.path.join(".", "static", "uploads")
+upload = FileUpload(upload_dir)
 
 
 @app.register
