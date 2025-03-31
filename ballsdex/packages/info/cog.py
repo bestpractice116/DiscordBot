@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("ballsdex.packages.info")
 
-
 def mention_app_command(app_command: app_commands.Command | app_commands.Group) -> str:
     if "mention" in app_command.extras:
         return app_command.extras["mention"]
@@ -27,7 +26,6 @@ def mention_app_command(app_command: app_commands.Command | app_commands.Group) 
             return f"`{app_command.name}`"
         else:
             return f"`/{app_command.name}`"
-
 
 class Info(commands.Cog):
     """
