@@ -13,8 +13,6 @@ build
 # log files
 *.log*
 .gatewayproxy
-
-# Virtual environment
 venv
 .venv
 .python-version
