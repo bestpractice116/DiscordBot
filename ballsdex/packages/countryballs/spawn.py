@@ -16,7 +16,6 @@ SPAWN_CHANCE_RANGE = (40, 55)
 
 CachedMessage = namedtuple("CachedMessage", ["content", "author_id"])
 
-
 @dataclass
 class SpawnCooldown:
     """
