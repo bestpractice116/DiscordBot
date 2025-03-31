@@ -113,15 +113,6 @@ class Ball(models.Model):
         default=None,
         description="Additional possible names for catching this ball, separated by semicolons",
     )
-    regime: fields.ForeignKeyRelation[Regime] = fields.ForeignKeyField(
-        "models.Regime", description="Political regime of this country", on_delete=fields.CASCADE
-    )
-    economy: fields.ForeignKeyRelation[Economy] | None = fields.ForeignKeyField(
-        "models.Economy",
-        description="Economical regime of this country",
-        on_delete=fields.SET_NULL,
-        null=True,
-    )
     health = fields.IntField(description="Ball health stat")
     attack = fields.IntField(description="Ball attack stat")
     rarity = fields.FloatField(description="Rarity of this ball")
