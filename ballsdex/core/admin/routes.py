@@ -8,7 +8,6 @@ from tortoise.exceptions import DoesNotExist
 
 from ballsdex.core.models import Ball, BallInstance, GuildConfig, Player, Special
 
-
 @app.get("/")
 async def home(
     request: Request,
@@ -38,7 +37,6 @@ async def generate_card(
     temp_instance = BallInstance(ball=ball, player=await Player.first(), count=1)
     buffer = temp_instance.draw_card()
     return Response(content=buffer.read(), media_type="image/png")
-
 
 @app.get("/special/generate/{pk}")
 async def generate_special_card(

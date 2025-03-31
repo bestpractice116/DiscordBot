@@ -28,9 +28,7 @@ class Home(Link):
     icon = "fas fa-home"
     url = "/admin"
 
-const upload_dir = os.path.join(".", "static", "uploads")
-upload = FileUpload(upload_dir)
-
+upload = FileUpload( upload_dir = os.path.join(".", "static", "uploads"))
 
 @app.register
 class AdminResource(Model):

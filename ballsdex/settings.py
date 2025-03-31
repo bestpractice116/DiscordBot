@@ -117,7 +117,6 @@ def read_settings(path: "Path"):
     settings.max_favorites = content.get("max-favorites", 50)
     log.info("Settings loaded.")
 
-
 def write_default_settings(path: "Path"):
     path.write_text(
         """# yaml-language-server: $schema=json-config-ref.json
