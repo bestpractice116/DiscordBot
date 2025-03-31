@@ -7,7 +7,6 @@ if TYPE_CHECKING:
     from ballsdex.core.bot import BallsDexBot
     from ballsdex.core.models import BallInstance, Player, Trade
 
-
 @dataclass(slots=True)
 class TradingUser:
     user: "discord.User | discord.Member"

@@ -9,7 +9,6 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("ballsdex.settings")
 
-
 @dataclass
 class Settings:
     """
@@ -83,9 +82,7 @@ class Settings:
     prometheus_host: str = "0.0.0.0"
     prometheus_port: int = 15260
 
-
 settings = Settings()
-
 
 def read_settings(path: "Path"):
     content = yaml.load(path.read_text(), yaml.Loader)
