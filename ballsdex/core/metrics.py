@@ -59,24 +59,6 @@ class PrometheusServer:
                 float("inf"),
             ),
         )
-
-    async def collect_metrics(self):
-        guilds: dict[int, int] = defaultdict(int)
-        for guild in self.bot.guilds:
-            if not guild.member_count:
-                continue
-            guilds[10 ** math.ceil(math.log(max(guild.member_count - 1, 1), 10))] += 1
-        for size, count in guilds.items():
-            self.guild_count.labels(size=size).set(count)
-
-        for shard_id, latency in self.bot.latencies:
-            self.shards_latecy.labels(shard_id=shard_id).observe(latency)
-
-        t1 = datetime.now()
-        await asyncio.sleep(1)
-        t2 = datetime.now()
-        self.asyncio_delay.observe((t2 - t1).total_seconds() - 1)
-
     async def get(self, request: web.Request) -> web.Response:
         log.debug("Request received")
         await self.collect_metrics()
