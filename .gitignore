@@ -12,11 +12,12 @@ build
 
 # log files
 *.log*
-
-# Virtual environment
+.gatewayproxy
 venv
 .venv
 .python-version
+
+.migrations
 
 # Visual Studio code settings
 .vscode
@@ -34,5 +35,3 @@ static
 # settings
 config.yml
 docker-compose.override.yml
-
-.env
