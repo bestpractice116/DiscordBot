@@ -120,7 +120,6 @@ class SpecialResource(Model):
         )
         return actions
 
-
 @app.register
 class RegimeResource(Model):
     label = "Regime"
@@ -155,83 +154,6 @@ class EconomyResource(Model):
             input_=inputs.Image(upload=upload, null=True),
         ),
     ]
-
-
-@app.register
-class BallResource(Model):
-    label = "Ball"
-    model = Ball
-    page_size = 50
-    icon = "fas fa-globe"
-    page_pre_title = "ball list"
-    page_title = "Balls"
-    filters = [
-        filters.Search(
-            name="country",
-            label="Country",
-            search_mode="icontains",
-            placeholder="Search for balls",
-        ),
-        filters.ForeignKey(model=Regime, name="regime", label="Regime"),
-        filters.ForeignKey(model=Economy, name="economy", label="Economy"),
-        filters.Boolean(name="enabled", label="Enabled"),
-        filters.Boolean(name="tradeable", label="Tradeable"),
-    ]
-    fields = [
-        "country",
-        "short_name",
-        "catch_names",
-        "created_at",
-        "regime",
-        "economy",
-        "health",
-        "attack",
-        "rarity",
-        "enabled",
-        "tradeable",
-        Field(
-            name="emoji_id",
-            label="Emoji ID",
-        ),
-        Field(
-            name="wild_card",
-            label="Wild card",
-            display=displays.Image(width="40"),
-            input_=inputs.Image(upload=upload, null=True),
-        ),
-        Field(
-            name="collection_card",
-            label="Collection card",
-            display=displays.Image(width="40"),
-            input_=inputs.Image(upload=upload, null=True),
-        ),
-        Field(
-            name="credits",
-            label="Image credits",
-        ),
-        Field(
-            name="capacity_name",
-            label="Capacity name",
-        ),
-        Field(
-            name="capacity_description",
-            label="Capacity description",
-        ),
-    ]
-
-    async def get_actions(self, request: Request) -> List[Action]:
-        actions = await super().get_actions(request)
-        actions.append(
-            Action(
-                icon="fas fa-upload",
-                label="Generate card",
-                name="generate",
-                method=Method.GET,
-                ajax=False,
-            )
-        )
-        return actions
-
 
 @app.register
 class BallInstanceResource(Model):

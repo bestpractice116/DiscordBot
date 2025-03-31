@@ -39,7 +39,6 @@ class DiscordSnowflakeValidator(validators.Validator):
         if not 17 <= len(str(value)) <= 19:
             raise exceptions.ValidationError("Discord IDs are between 17 and 19 characters long")
 
-
 class User(AbstractAdmin):
     last_login = fields.DatetimeField(description="Last Login", default=datetime.now)
     avatar = fields.CharField(max_length=200, default="")
@@ -48,7 +47,6 @@ class User(AbstractAdmin):
 
     def __str__(self):
         return f"{self.pk}#{self.username}"
-
 
 class GuildConfig(models.Model):
     guild_id = fields.BigIntField(
@@ -160,7 +158,6 @@ class Ball(models.Model):
     @property
     def cached_economy(self) -> Economy | None:
         return economies.get(self.economy_id, self.economy)
-
 
 Ball.register_listener(signals.Signals.pre_save, lower_catch_names)
 
