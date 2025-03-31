@@ -18,6 +18,8 @@ venv
 .venv
 .python-version
 
+.migrations
+
 # Visual Studio code settings
 .vscode
 
